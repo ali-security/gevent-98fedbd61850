@@ -627,6 +627,9 @@ TestEtcHosts.populate_tests()
 
 
 
+@greentest.skipIf(greentest.RUNNING_ON_CI,
+                  "www.gevent.org's live DNS records (CDN-hosted docs) have changed since this "
+                  "release; the system and gevent resolvers no longer return comparable results")
 class TestGeventOrg(TestCase):
     # For this test to work correctly, it needs to resolve to
     # an address with a single A record; round-robin DNS and multiple A records
@@ -749,6 +752,9 @@ class Test_getaddrinfo(TestCase):
         self.assertIs(socktype, socket.SOCK_STREAM)
         self.assertIs(af, socket.AF_INET)
 
+@greentest.skipIf(greentest.RUNNING_ON_CI,
+                  "Resolves live internationalized domain names; with the network enabled the "
+                  "system and gevent resolvers intermittently report different lookup errors")
 class TestInternational(TestCase):
     if PY2:
         # We expect these to raise UnicodeEncodeError, which is a
@@ -858,6 +864,9 @@ class Test_getnameinfo_127001(TestCase):
         self._test('getnameinfo', ('127.0.0.1', 80), socket.NI_NAMEREQD)
 
 
+@greentest.skipIf(greentest.RUNNING_ON_CI,
+                  "www.gevent.org's live DNS records (CDN-hosted docs) have changed since this "
+                  "release; the system and gevent resolvers no longer return comparable results")
 class Test_getnameinfo_geventorg(TestCase):
 
     @unittest.skipIf(RESOLVER_DNSPYTHON,

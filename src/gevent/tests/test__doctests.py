@@ -100,9 +100,10 @@ def main(): # pylint:disable=too-many-locals
         suite = unittest.TestSuite()
         checker = RENormalizingOutputChecker((
             # Normalize subprocess.py: BSD ls is in the example, gnu ls outputs
-            # 'cannot access'
+            # 'cannot access' (older coreutils, e.g. CentOS 6 in manylinux2010,
+            # print the file name without quotes)
             (re.compile(
-                "ls: cannot access 'non_existent_file': No such file or directory"),
+                "ls: cannot access '?non_existent_file'?: No such file or directory"),
              "ls: non_existent_file: No such file or directory"),
             # Python 3 bytes add a "b".
             (re.compile(r'b(".*?")'), r"\1"),
@@ -125,7 +126,9 @@ def main(): # pylint:disable=too-many-locals
         util.log('Total: %s tests in %s modules', tests_count, modules_count)
         # TODO: Pass this off to unittest.main()
         runner = unittest.TextTestRunner(verbosity=2)
-        runner.run(suite)
+        result = runner.run(suite)
+        if not result.wasSuccessful():
+            sys.exit(1)
     finally:
         os.chdir(cwd)
 

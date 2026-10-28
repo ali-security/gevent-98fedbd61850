@@ -93,6 +93,14 @@ COVERAGE = _AttrCondition('RUN_COVERAGE')
 RESOLVER_NOT_SYSTEM = _AttrCondition('RESOLVER_NOT_SYSTEM')
 BIT_64 = ConstantCondition(struct.calcsize('P') * 8 == 64, 'BIT_64')
 PY380_EXACTLY = ConstantCondition(sys.version_info[:3] == (3, 8, 0), 'PY380_EXACTLY')
+# The python.org 2.7.18 / 3.8.10 macOS builds on current macOS: getnameinfo()
+# on the IPv6 "localhost" raises OverflowError (flowinfo) and lookups hang.
+MAC_PY27_PY38 = ConstantCondition(
+    sys.platform == 'darwin' and sys.version_info[:2] in ((2, 7), (3, 8)),
+    'MAC_PY27_PY38')
+_MAC_LOCALHOST_REASON = (
+    "python.org CPython 2.7/3.8 on current macOS: getnameinfo() on the IPv6 "
+    "localhost raises OverflowError (flowinfo must be 0-1048575)")
 
 class _Definition(object):
     __slots__ = (
@@ -235,7 +243,25 @@ class Definitions(DefinitionsBase):
 
     # This one sometimes randomly closes connections, but no indication
     # of a server crash, only a client side close.
-    test__server_pywsgi = Flaky(when=APPVEYOR)
+    test__server_pywsgi = Multi().flaky(
+        when=APPVEYOR
+    ).ignored(
+        _MAC_LOCALHOST_REASON,
+        when=MAC_PY27_PY38
+    )
+
+    test__greenness = Ignored(_MAC_LOCALHOST_REASON, when=MAC_PY27_PY38)
+
+    test_smtplib = Ignored(_MAC_LOCALHOST_REASON, when=MAC_PY27_PY38)
+
+    test__socket_dns = Ignored(
+        _MAC_LOCALHOST_REASON + "; resolving the runner's own hostname "
+        "(TestHostname) hangs past the runner timeout",
+        when=MAC_PY27_PY38)
+
+    test__socket_dns6 = Ignored(
+        _MAC_LOCALHOST_REASON + "; IPv6 localhost lookups",
+        when=MAC_PY27_PY38)
 
     test_threading = Multi().ignored(
         """
@@ -420,11 +446,15 @@ class Definitions(DefinitionsBase):
         when=CI & LEAKTEST
     )
 
-    test_socket = RunAlone(
+    test_socket = Multi().ignored(
+        _MAC_LOCALHOST_REASON + "; hangs past the runner timeout",
+        when=MAC_PY27_PY38
+    )
+    test_socket._conds.append(RunAlone(
         "Sometimes has unexpected timeouts",
         when=CI & PYPY & PY3,
         ignore_coverage=ALWAYS, # times out
-    )
+    ))
 
     test__refcount = Ignored(
         "Sometimes fails to connect for no reason",

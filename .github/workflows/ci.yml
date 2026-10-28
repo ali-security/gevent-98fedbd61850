@@ -33,7 +33,8 @@ name: gevent testing
 
 
 # Triggers the workflow on push or pull request events
-on: [push, pull_request]
+on:
+  workflow_dispatch: {}
 # Limiting to particular branches might be helpful to conserve minutes.
 #on:
   # push:
@@ -70,13 +71,16 @@ env:
   CCACHE_NOCPP2: true
   CCACHE_SLOPPINESS: file_macro,time_macros,include_file_ctime,include_file_mtime
   CCACHE_NOHASHDIR: true
+  # Resolve every pip install against the index as it stood at the 21.12.0 release.
+  PIP_INDEX_URL: https://:2021-12-11T20:33:45Z@time-machines-pypi.sealsecurity.io/
 
   #
 
 
 jobs:
   manylinux_arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
     # We use a regular Python matrix entry to share as much code as possible.
     strategy:
       matrix:
@@ -84,13 +88,13 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Cache ~/.ccache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.ccache/
           key: ${{ runner.os }}-ccache_manylinux-${{ matrix.python-version }}
@@ -100,7 +104,7 @@ jobs:
           echo "::set-output name=dir::$(pip cache dir)"
 
       - name: pip cache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ runner.os }}-pip_manylinux_aarch64-${{ matrix.python-version }}
@@ -109,41 +113,29 @@ jobs:
 
       - name: Update pip
         run: pip install -U pip
-      - name: Enable emulation
-        run: |
-          docker run --rm --privileged hypriot/qemu-register
-        # This one was seen in pyca/bcrypt. What's the difference?
-        # (Other than this one not working.)
-        #run: |
-        #  docker run --rm --privileged multiarch/qemu-user-static:register --reset
       - name: Build and test gevent
         # Skip the bulk of the tests, running them emulated on arm takes
         # forever. Likewise, don't build or even configure c-ares; in the emulated platform
         # it takes at least 15 minutes and often much longer.
         env:
-          DOCKER_IMAGE: quay.io/pypa/manylinux2014_aarch64
+          DOCKER_IMAGE: quay.io/pypa/manylinux2014_aarch64:2021-12-05-142ef77
           GEVENTTEST_SKIP_ALL: 1
           GEVENTSETUP_DISABLE_ARES: 1
         run: scripts/releases/make-manylinux
       - name: Upload gevent wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           path: wheelhouse/*whl
           name: manylinux_aarch64_wheels.zip
+          if-no-files-found: error
       - name: Restore pip cache permissions
         run: sudo chown -R $(whoami) ${{ steps.pip-cache.outputs.dir }}
-      - name: Publish package to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.4.1
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-        with:
-          user: __token__
-          password: ${{ secrets.TWINE_PASSWORD }}
-          skip_existing: true
-          packages_dir: wheelhouse/
 
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
     strategy:
+      fail-fast: false
       matrix:
         python-version: [2.7, pypy-2.7, pypy-3.7, 3.6, 3.7, 3.8, 3.9, '3.10.0']
         # ubuntu-latest is at least 20.04. But this breaks the SSL
@@ -151,13 +143,13 @@ jobs:
         # strictness.
         # The standard library has only been updated with fixes for
         # this in 3.8+.
-        os: [ubuntu-18.04, macos-latest, ubuntu-latest]
+        os: [ubuntu-22.04, macos-15-intel, ubuntu-latest]
         exclude:
-          - os: macos-latest
+          - os: macos-15-intel
             python-version: pypy-2.7
-          - os: macos-latest
+          - os: macos-15-intel
             python-version: pypy-3.7
-          - os: macos-latest
+          - os: macos-15-intel
             python-version: 3.6
           - os: ubuntu-latest
             python-version: 2.7
@@ -169,22 +161,109 @@ jobs:
             python-version: 3.6
           - os: ubuntu-latest
             python-version: 3.7
-          - os: ubuntu-18.04
+          - os: ubuntu-22.04
             python-version: 3.8
-          - os: ubuntu-18.04
+          - os: ubuntu-22.04
             python-version: 3.9
-          - os: ubuntu-18.04
+          - os: ubuntu-22.04
             python-version: '3.10.0'
+        include:
+          # Interpreters as setup-python provided them at the 21.12.0 release
+          # (built for macOS 10.14, matching the published wheel tags).
+          - os: macos-15-intel
+            python-version: 3.7
+            setup-version: '3.7.12'
+          - os: macos-15-intel
+            python-version: 3.8
+            macos-pkg: 3.8.10/python-3.8.10-macosx10.9.pkg
+          - os: macos-15-intel
+            python-version: 2.7
+            macos-pkg: 2.7.18/python-2.7.18-macosx10.9.pkg
+          - os: macos-15-intel
+            python-version: 3.9
+            setup-version: '3.9.9'
+          # CPython 3.6/3.7's ssl module does not work with the OpenSSL 3 of
+          # current Ubuntu images; upstream ran these on ubuntu-18.04 (OpenSSL 1.1.1).
+          - os: ubuntu-22.04
+            python-version: 3.6
+            openssl11: true
+          - os: ubuntu-22.04
+            python-version: 3.7
+            openssl11: true
+          # setup-python has no 3.10.0 build for current Ubuntu images.
+          - os: ubuntu-latest
+            python-version: '3.10.0'
+            setup-version: '3.10'
     steps:
       - name: checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+      - name: Build OpenSSL 1.1.1
+        if: matrix.openssl11
+        run: |
+          unset CC CFLAGS CPPFLAGS
+          curl -sSL https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1w/openssl-1.1.1w.tar.gz | tar xz -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/openssl-1.1.1w"
+          ./config --prefix=/opt/openssl11 --openssldir=/opt/openssl11/ssl shared > /dev/null
+          make -j4 > /dev/null
+          sudo make install_sw > /dev/null
+          sudo mkdir -p /opt/openssl11/ssl
+          sudo ln -s /etc/ssl/certs /opt/openssl11/ssl/certs
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        if: ${{ !matrix.macos-pkg }}
+        uses: MatteoH2O1999/setup-python@v4
+        # Keep the gevent build flags out of interpreters built from source;
+        # the openssl11 legs build CPython against the OpenSSL 1.1.1 above.
+        env:
+          CFLAGS: ""
+          CPPFLAGS: ${{ matrix.openssl11 && '-I/opt/openssl11/include' || '' }}
+          LDFLAGS: ${{ matrix.openssl11 && '-L/opt/openssl11/lib -Wl,-rpath,/opt/openssl11/lib' || '' }}
+          PKG_CONFIG_PATH: ${{ matrix.openssl11 && '/opt/openssl11/lib/pkgconfig' || '' }}
+          CC: ""
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.setup-version || matrix.python-version }}
+          cache-build: ${{ !matrix.openssl11 }}
+          allow-build: ${{ matrix.openssl11 && 'force' || 'allow' }}
+      - name: Set up Python ${{ matrix.python-version }} (python.org, macOS)
+        # setup-python no longer carries a 10.14-era build of these; use the
+        # python.org x86_64 installer and target macOS 10.14 like the others.
+        if: matrix.macos-pkg
+        run: |
+          curl -sSLO https://www.python.org/ftp/python/${{ matrix.macos-pkg }}
+          sudo installer -pkg "$(basename ${{ matrix.macos-pkg }})" -target /
+          fw=/Library/Frameworks/Python.framework/Versions/${{ matrix.python-version }}
+          mkdir -p "$RUNNER_TEMP/pybin"
+          ln -sf "$fw/bin/python${{ matrix.python-version }}" "$RUNNER_TEMP/pybin/python"
+          ln -sf "$fw/bin/pip${{ matrix.python-version }}" "$RUNNER_TEMP/pybin/pip"
+          # python.org builds bundle their own OpenSSL with no CA store; this is
+          # the installer's own post-install step (pip install certifi + cert.pem
+          # link), needed by the networked HTTPS tests (test__socket_ssl).
+          "/Applications/Python ${{ matrix.python-version }}/Install Certificates.command"
+          echo "$fw/bin" >> $GITHUB_PATH
+          echo "$RUNNER_TEMP/pybin" >> $GITHUB_PATH
+          echo "MACOSX_DEPLOYMENT_TARGET=10.14" >> $GITHUB_ENV
+          "$fw/bin/python${{ matrix.python-version }}" -m pip install -U pip
+      - name: Provide Cython 3.0a9
+        # gevent 21.12.0 needs Cython >= 3.0a9 to build, and every Cython 3.0
+        # alpha has since been deleted from PyPI. Build it from its release tag
+        # and offer it to pip (isolated build envs included) via PIP_FIND_LINKS.
+        shell: bash
+        run: |
+          unset CC CFLAGS CPPFLAGS
+          python -m pip install -U wheel
+          python -m pip wheel --no-deps -w "$RUNNER_TEMP/cython" https://github.com/cython/cython/archive/refs/tags/3.0.0a9.tar.gz
+          if [ "${{ matrix.openssl11 }}" = "true" ]; then
+            # The interpreter built from source here ships no `pip` script, so the
+            # job's bare `pip` would be the system Python's; point it at this one.
+            mkdir -p "$RUNNER_TEMP/pipshim"
+            printf '#!/bin/sh\nexec "%s" -m pip "$@"\n' "$(command -v python)" > "$RUNNER_TEMP/pipshim/pip"
+            chmod +x "$RUNNER_TEMP/pipshim/pip"
+            echo "$RUNNER_TEMP/pipshim" >> "$GITHUB_PATH"
+          fi
+          echo "PIP_FIND_LINKS=$RUNNER_TEMP/cython" >> "$GITHUB_ENV"
       - name: Install ccache (ubuntu)
         if: startsWith(runner.os, 'Linux')
         run: |
+          sudo apt-get update
           sudo apt-get install -y ccache sed gcc
       - name: Install ccache (macos)
         if: startsWith(runner.os, 'macOS')
@@ -205,7 +284,7 @@ jobs:
       # the cache.
       ###
       - name: Cache ~/.ccache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.ccache/
           key: ${{ runner.os }}-ccache2-${{ matrix.python-version }}
@@ -216,7 +295,7 @@ jobs:
           echo "::set-output name=dir::$(pip cache dir)"
 
       - name: pip cache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}
@@ -225,7 +304,7 @@ jobs:
       - name: Cache config.cache
         # Store the configure caches. Having a cache can speed up c-ares
         # configure from 2-3 minutes to 20 seconds.
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: deps/*/config.cache
           # XXX: This should probably include a hash of each configure
@@ -254,12 +333,25 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -U pip
+          # Hosted pip (25+) dropped the setup.py-develop fallback the editable
+          # install below relies on; use the release-era pip.
+          pip install 'pip<=21.3.1'
           pip install -U -q setuptools wheel twine
-          pip install -q -U 'faulthandler; python_version == "2.7" and platform_python_implementation == "CPython"'
+          # Hosted interpreters ship a setuptools newer than this release and -U never
+          # downgrades; the release-era one keeps bdist_wheel coming from wheel 0.37.0.
+          pip install -q 'setuptools<=59.5.0'
+          # faulthandler (optional, py2.7 only) has been deleted from PyPI.
           pip install -q -U 'cffi;platform_python_implementation=="CPython"'
           pip install -q -U 'cython>=3.0a9'
           pip install 'greenlet>=1.0a1;platform_python_implementation=="CPython"'
 
+      - name: Build gevent sdist
+        # The released sdist was made on macOS with Python 3.10 from a clean
+        # tree (setup.py cythonizes on import, so it carries the generated C).
+        if: matrix.python-version == '3.10.0' && startsWith(runner.os, 'macOS')
+        run: |
+          python setup.py sdist
+          twine check dist/*.tar.gz
       - name: Build gevent
         run: |
           # Next, build the wheel *in place*. This helps ccache, and also lets us cache the configure
@@ -271,19 +363,18 @@ jobs:
           ls -l dist
           twine check dist/*
       - name: Upload gevent wheel
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: gevent-${{ runner.os }}-${{ matrix.python-version }}.whl
           path: dist/*whl
-      - name: Publish package to PyPI (mac)
-        # We cannot 'uses: pypa/gh-action-pypi-publish@v1.4.1' because
-        # that's apparently a container action, and those don't run on
-        # the Mac.
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags') && startsWith(runner.os, 'Mac')
-        env:
-          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
-        run: |
-          twine upload --skip-existing dist/*
+          if-no-files-found: error
+      - name: Upload gevent sdist
+        if: matrix.python-version == '3.10.0' && startsWith(runner.os, 'macOS')
+        uses: actions/upload-artifact@v4
+        with:
+          name: gevent-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
       - name: Install gevent
         # I'd prefer to install the wheel in non-editable mode, but that seems to
@@ -299,18 +390,20 @@ jobs:
           python -c 'import gevent.core; print(gevent.core.loop)'
           python -c 'import gevent.ares; print(gevent.ares)'
           ccache -s
-      - name: Lint (Python 3.9)
-        if: matrix.python-version == 3.9 && startsWith(runner.os, 'Linux')
-        # We only need to do this on one version, and it should be Python 3, because
-        # pylint has stopped updating for Python 2.
-        # We do this here rather than a separate job to avoid the compilation overhead.
-        # TODO: Revisit this when we have caching of that part.
+      - name: Prepare the Linux test environment (bash as /bin/sh, tipc)
+        # Ubuntu's dash keeps a parent shell for `sh -c 'sleep 3'` instead of
+        # exec'ing it, so test__subprocess's
+        # test_run_with_shell_timeout_and_capture_output kills only the shell
+        # and then waits ~3s for the orphaned sleep to close the pipes.
+        # bash (the /bin/sh of the manylinux images, where it passes) execs.
+        # Also load the TIPC kernel module for test_socket's TIPC tests.
+        if: startsWith(runner.os, 'Linux')
         run: |
-          pip install -U pylint
-          python -m pylint --rcfile=.pylintrc gevent
+          sudo ln -sf bash /bin/sh
+          if sudo modprobe tipc; then echo "tipc module loaded"; else echo "tipc kernel module unavailable on this runner kernel"; fi
       - name: "Tests: Basic"
         run: |
-          python -m gevent.tests --second-chance $G_USE_COV
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV
       # For the CPython interpreters, unless we have reason to expect
       # different behaviour across the versions (e.g., as measured by coverage)
       # it's sufficient to run the full suite on the current version
@@ -325,21 +418,21 @@ jobs:
         env:
           GEVENT_FILE: thread
         run: |
-          python -m gevent.tests --second-chance $G_USE_COV `(cd src/gevent/tests >/dev/null && ls test__*subprocess*.py)`
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV `(cd src/gevent/tests >/dev/null && ls test__*subprocess*.py)`
       - name: "Tests: c-ares resolver"
         # This sometimes fails on mac. Also, save mac minutes.
         if: (matrix.python-version == 2.7 || matrix.python-version == 3.9) && startsWith(runner.os, 'Linux')
         env:
           GEVENT_RESOLVER: ares
         run: |
-          python -mgevent.tests --second-chance $G_USE_COV --ignore tests_that_dont_use_resolver.txt
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV --ignore tests_that_dont_use_resolver.txt
       - name: "Tests: dnspython resolver"
         # This has known issues on Pypy-3.6. Also, save mac minutes.
         if: (matrix.python-version == 2.7 || matrix.python-version == 3.9) && startsWith(runner.os, 'Linux')
         env:
           GEVENT_RESOLVER: dnspython
         run: |
-          python -mgevent.tests --second-chance $G_USE_COV --ignore tests_that_dont_use_resolver.txt
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV --ignore tests_that_dont_use_resolver.txt
       - name: "Tests: leakchecks"
         # Run the leaktests; this seems to be extremely slow on Python 3.7
         # XXX: Figure out why. Can we reproduce locally?
@@ -347,7 +440,7 @@ jobs:
         env:
           GEVENTTEST_LEAKCHECK: 1
         run: |
-          python -m gevent.tests --second-chance --ignore tests_that_dont_do_leakchecks.txt
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance --ignore tests_that_dont_do_leakchecks.txt
       - name: "Tests: PURE_PYTHON"
         # No compiled cython modules on CPython, using the default backend. Get coverage here.
         # We should only need to run this for a single Python 2 and a Python 3
@@ -355,59 +448,73 @@ jobs:
         env:
           PURE_PYTHON: 1
         run: |
-          python -mgevent.tests --second-chance --coverage
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance --coverage
       - name: "Tests: libuv"
         if: (matrix.python-version == 2.7 || matrix.python-version == 3.9)
         env:
           GEVENT_LOOP: libuv
         run: |
-          python -m gevent.tests --second-chance $G_USE_COV
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV
       - name: "Tests: libev-cffi"
         if: (matrix.python-version == 2.7 || matrix.python-version == 3.9) && startsWith(runner.os, 'Linux')
         env:
           GEVENT_LOOP: libev-cffi
         run: |
-          python -m gevent.tests --second-chance $G_USE_COV
-      - name: Report coverage
-        if: ${{ !startsWith(matrix.python-version, 'pypy')  }}
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance $G_USE_COV
+      - name: Test summaries of every test step in this job
+        if: always()
+        shell: bash
         run: |
-          python -m coverage combine || true
-          python -m coverage report -i || true
-      - name: Submit to Coveralls
-        # This is a container action, which only runs on Linux.
-        if: ${{ !startsWith(matrix.python-version, 'pypy') && startsWith(runner.os, 'Linux') }}
-        uses: AndreMiras/coveralls-python-action@develop
-        with:
-          parallel: true
-
-  coveralls_finish:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-    - name: Coveralls Finished
-      uses: AndreMiras/coveralls-python-action@develop
-      with:
-        parallel-finished: true
+          f="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/gevent-test-summaries.txt"
+          if [ -f "$f" ]; then cat "$f"; else echo "No gevent test step ran in this job."; fi
 
   test_no_embed:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
     strategy:
+      fail-fast: false
       matrix:
         python-version: [2.7, 3.9]
-        os: [ubuntu-18.04]
+        os: [ubuntu-22.04]
     steps:
       - name: checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: MatteoH2O1999/setup-python@v4
+        # Keep the gevent build flags out of interpreters built from source.
+        env:
+          CFLAGS: ""
+          CPPFLAGS: ""
+          CC: ""
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.setup-version || matrix.python-version }}
+          cache-build: true
+          allow-build: allow
+      - name: Provide Cython 3.0a9
+        # gevent 21.12.0 needs Cython >= 3.0a9 to build, and every Cython 3.0
+        # alpha has since been deleted from PyPI. Build it from its release tag
+        # and offer it to pip (isolated build envs included) via PIP_FIND_LINKS.
+        shell: bash
+        run: |
+          unset CC CFLAGS CPPFLAGS
+          python -m pip install -U wheel
+          python -m pip wheel --no-deps -w "$RUNNER_TEMP/cython" https://github.com/cython/cython/archive/refs/tags/3.0.0a9.tar.gz
+          if [ "${{ matrix.openssl11 }}" = "true" ]; then
+            # The interpreter built from source here ships no `pip` script, so the
+            # job's bare `pip` would be the system Python's; point it at this one.
+            mkdir -p "$RUNNER_TEMP/pipshim"
+            printf '#!/bin/sh\nexec "%s" -m pip "$@"\n' "$(command -v python)" > "$RUNNER_TEMP/pipshim/pip"
+            chmod +x "$RUNNER_TEMP/pipshim/pip"
+            echo "$RUNNER_TEMP/pipshim" >> "$GITHUB_PATH"
+          fi
+          echo "PIP_FIND_LINKS=$RUNNER_TEMP/cython" >> "$GITHUB_ENV"
       - name: Install ccache (ubuntu)
         if: startsWith(runner.os, 'Linux')
         run: |
+          sudo apt-get update
           sudo apt-get install -y ccache sed gcc
       - name: Cache ~/.ccache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.ccache/
           key: ${{ runner.os }}-ccache2_embed-${{ matrix.python-version }}
@@ -418,7 +525,7 @@ jobs:
           echo "::set-output name=dir::$(pip cache dir)"
 
       - name: pip cache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ runner.os }}-pip_emded-${{ matrix.python-version }}
@@ -427,7 +534,7 @@ jobs:
       - name: Cache config.cache
         # Store the configure caches. Having a cache can speed up c-ares
         # configure from 2-3 minutes to 20 seconds.
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: deps/*/config.cache
           # XXX: This should probably include a hash of each configure
@@ -443,8 +550,14 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -U pip
+          # Hosted pip (25+) dropped the setup.py-develop fallback the editable
+          # install below relies on; use the release-era pip.
+          pip install 'pip<=21.3.1'
           pip install -U -q setuptools wheel twine
-          pip install -q -U 'faulthandler; python_version == "2.7" and platform_python_implementation == "CPython"'
+          # Hosted interpreters ship a setuptools newer than this release and -U never
+          # downgrades; the release-era one keeps bdist_wheel coming from wheel 0.37.0.
+          pip install -q 'setuptools<=59.5.0'
+          # faulthandler (optional, py2.7 only) has been deleted from PyPI.
           pip install -q -U 'cffi;platform_python_implementation=="CPython"'
           pip install -q -U 'cython>=3.0a5'
           pip install 'greenlet>=1.0a1;platform_python_implementation=="CPython"'
@@ -479,31 +592,51 @@ jobs:
           objdump -p build/lib*/gevent/libev/corecext*so | grep "NEEDED.*libev.so"
           objdump -p build/lib*/gevent/libuv/_corecffi*so | grep "NEEDED.*libuv.so"
           objdump -p build/lib*/gevent/resolver/cares*so | grep "NEEDED.*libcares.so"
+      - name: Prepare the Linux test environment (bash as /bin/sh, tipc)
+        # Ubuntu's dash keeps a parent shell for `sh -c 'sleep 3'` instead of
+        # exec'ing it, so test__subprocess's
+        # test_run_with_shell_timeout_and_capture_output kills only the shell
+        # and then waits ~3s for the orphaned sleep to close the pipes.
+        # bash (the /bin/sh of the manylinux images, where it passes) execs.
+        # Also load the TIPC kernel module for test_socket's TIPC tests.
+        if: startsWith(runner.os, 'Linux')
+        run: |
+          sudo ln -sf bash /bin/sh
+          if sudo modprobe tipc; then echo "tipc module loaded"; else echo "tipc kernel module unavailable on this runner kernel"; fi
       - name: test non-embedded
         run: |
           # Verify that we got non-embedded builds
           python -c 'import gevent.libev.corecffi as CF; assert not CF.LIBEV_EMBED'
           python -c 'import gevent.libuv.loop as CF; assert not CF.libuv.LIBUV_EMBED'
-          python -mgevent.tests --second-chance
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance
+      - name: Test summaries of every test step in this job
+        if: always()
+        shell: bash
+        run: |
+          f="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/gevent-test-summaries.txt"
+          if [ -f "$f" ]; then cat "$f"; else echo "No gevent test step ran in this job."; fi
 
   linux_wheels:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     strategy:
+      fail-fast: false
       matrix:
         config:
           # Python version, docker image, short name
-          - ["3.9", "quay.io/pypa/manylinux2010_x86_64", "manylinux"]
-          - ["3.9", "quay.io/pypa/musllinux_1_1_x86_64", "musllinux"]
+          # Images pinned to the last tag before the 21.12.0 release.
+          - ["3.9", "quay.io/pypa/manylinux2010_x86_64:2021-12-05-142ef77", "manylinux"]
+          - ["3.9", "quay.io/pypa/musllinux_1_1_x86_64:2021-12-05-142ef77", "musllinux"]
     name: ${{ matrix.config[2] }}
     steps:
       - name: checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.config[0] }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.config[0] }}
       - name: Cache ~/.ccache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: ~/.ccache/
           key: ${{ runner.os }}-ccache_${{ matrix.config[2] }}-${{ matrix.config[0] }}
@@ -513,7 +646,7 @@ jobs:
           echo "::set-output name=dir::$(pip cache dir)"
 
       - name: pip cache
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         # Be careful not to accidentally share caches. The wheel names
         # may be the same (e.g.,
         # psutil-5.8.0-cp310-cp310-linux_x86_64.whl) but they aren't
@@ -538,20 +671,148 @@ jobs:
 
         run: scripts/releases/make-manylinux
       - name: Upload gevent wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           path: wheelhouse/*whl
           name: ${{ matrix.config[2] }}_x86_64_wheels.zip
+          if-no-files-found: error
       - name: Restore pip cache permissions
         run: sudo chown -R $(whoami) ${{ steps.pip-cache.outputs.dir }}
-      - name: Publish package to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.4.1
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+
+  windows:
+    # Port of appveyor.yml (upstream builds and tests the Windows wheels on
+    # AppVeyor, which does not run on this fork): same interpreter matrix,
+    # same build, test and wheel commands.
+    runs-on: windows-2022
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 64-bit, built and tested
+          - {python-version: "pypy-2.7-v7.3.6", arch: x64}
+          - {python-version: "3.10.0", arch: x64}
+          - {python-version: "3.9", arch: x64}
+          - {python-version: "2.7", arch: x64}
+          - {python-version: "3.8", arch: x64}
+          - {python-version: "3.7", arch: x64}
+          - {python-version: "3.6", arch: x64}
+          # 32-bit, wheel only (no testing)
+          - {python-version: "3.9", arch: x86, wheel-only: true}
+          - {python-version: "3.8", arch: x86, wheel-only: true}
+          - {python-version: "3.7", arch: x86, wheel-only: true}
+          - {python-version: "3.6", arch: x86, wheel-only: true}
+          - {python-version: "2.7", arch: x86, wheel-only: true}
+    env:
+      # The AppVeyor environment these builds and tests were written for.
+      APPVEYOR: "True"
+      CFLAGS: ""
+      CPPFLAGS: ""
+      CC: ""
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Drop .git
+        # AppVeyor's shallow_clone fetched a zip without .git; gevent's setup only
+        # makes c-ares optional (not built on Windows) outside a git checkout.
+        run: rm -rf .git
+      - name: Set up Python ${{ matrix.python-version }} ${{ matrix.arch }}
+        if: matrix.python-version != '2.7'
+        uses: actions/setup-python@v5
         with:
-          user: __token__
-          password: ${{ secrets.TWINE_PASSWORD }}
-          skip_existing: true
-          packages_dir: wheelhouse/
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.arch }}
+      - name: Set up Python 2.7 ${{ matrix.arch }}
+        # The setup-python manifest no longer carries 2.7; use the python.org
+        # installer, as AppVeyor's C:\Python27 images did.
+        if: matrix.python-version == '2.7'
+        shell: pwsh
+        run: |
+          $suffix = if ('${{ matrix.arch }}' -eq 'x64') { '.amd64' } else { '' }
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/2.7.18/python-2.7.18$suffix.msi" -OutFile python27.msi
+          $target = "C:\Python27-${{ matrix.arch }}"
+          Start-Process msiexec.exe -Wait -ArgumentList "/i python27.msi /qn ALLUSERS=1 TARGETDIR=$target"
+          Remove-Item python27.msi
+          "$target" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "$target\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Install Microsoft Visual C++ Compiler for Python 2.7
+        # AppVeyor's Visual Studio 2015 image shipped it; Microsoft no longer
+        # hosts the installer, so fetch a mirror and pin its sha256.
+        if: matrix.python-version == '2.7'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/reider-roque/sulley-win-installer/raw/master/VCForPython27.msi -OutFile VCForPython27.msi
+          if ((Get-FileHash VCForPython27.msi -Algorithm SHA256).Hash -ne '070474DB76A2E625513A5835DF4595DF9324D820F9CC97EAB2A596DCBC2F5CBF') { throw 'VCForPython27.msi checksum mismatch' }
+          Start-Process msiexec.exe -Wait -ArgumentList '/i VCForPython27.msi /quiet /norestart ALLUSERS=1'
+          Remove-Item VCForPython27.msi
+      - name: Report Python
+        run: |
+          python --version
+          python -c "import struct; print(struct.calcsize('P') * 8)"
+          python -mensurepip -U --user
+          python -mpip install -U --user pip
+      - name: Provide Cython 3.0a9
+        # gevent 21.12.0 needs Cython >= 3.0a9 to build, and every Cython 3.0
+        # alpha has since been deleted from PyPI. Build it from its release tag
+        # and offer it to pip (isolated build envs included) via PIP_FIND_LINKS.
+        shell: bash
+        run: |
+          unset CC CFLAGS CPPFLAGS
+          python -m pip install -U wheel
+          python -m pip wheel --no-deps -w "$RUNNER_TEMP/cython" https://github.com/cython/cython/archive/refs/tags/3.0.0a9.tar.gz
+          if [ "${{ matrix.openssl11 }}" = "true" ]; then
+            # The interpreter built from source here ships no `pip` script, so the
+            # job's bare `pip` would be the system Python's; point it at this one.
+            mkdir -p "$RUNNER_TEMP/pipshim"
+            printf '#!/bin/sh\nexec "%s" -m pip "$@"\n' "$(command -v python)" > "$RUNNER_TEMP/pipshim/pip"
+            chmod +x "$RUNNER_TEMP/pipshim/pip"
+            echo "$RUNNER_TEMP/pipshim" >> "$GITHUB_PATH"
+          fi
+          echo "PIP_FIND_LINKS=$RUNNER_TEMP/cython" >> "$GITHUB_ENV"
+      - name: Build gevent
+        run: |
+          python -m pip install -U wheel cython setuptools cffi
+          if [ "${{ matrix.wheel-only }}" != "true" ]; then python -m pip install -U -e .[test]; fi
+      - name: Prefer IPv4 for localhost
+        # The tests bind and connect to "localhost" (Python 3.7+); Windows Server
+        # 2022 resolves it to ::1 first, and every refused ::1 connect to the
+        # IPv4 listener costs ~1s, pushing test__pywsgi past the runner's timeout.
+        shell: pwsh
+        run: netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 60 4
+      - name: Test gevent (skipped on 32-bit legs)
+        if: ${{ matrix.wheel-only }}
+        run: |
+          echo "32-bit leg: wheel built without running the test suite, as upstream's appveyor.yml"
+          echo "does for every 32-bit interpreter (GWHEEL_ONLY: true); the same code is tested on the"
+          echo "64-bit Windows legs of this job."
+      - name: Test gevent
+        if: ${{ !matrix.wheel-only }}
+        run: |
+          python -c "import greenlet; print(greenlet, greenlet.__version__)"
+          python -c "import gevent.core; print(gevent.core.loop)"
+          python -c "import gevent; print(gevent.config.settings['resolver'].get_options())"
+          python -c "from gevent._compat import get_clock_info; print(get_clock_info('perf_counter'))"
+          bash .github/sealtest/run-tests.sh python -m gevent.tests --verbose --second-chance --config known_failures.py
+      - name: Build gevent wheel
+        run: |
+          python -m pip install wheel cython setuptools cffi twine
+          python -m pip wheel --no-build-isolation . -w dist
+          ls -l dist
+      - name: Upload gevent wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: gevent-Windows-${{ matrix.python-version }}-${{ matrix.arch }}.whl
+          path: dist/gevent*whl
+          if-no-files-found: error
+      - name: Test summaries of every test step in this job
+        if: always()
+        shell: bash
+        run: |
+          f="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")/gevent-test-summaries.txt"
+          if [ -f "$f" ]; then cat "$f"; else echo "No gevent test step ran in this job."; fi
 
 # TODO:
 # * Use YAML syntax to share snippets, like the old .travis.yml did

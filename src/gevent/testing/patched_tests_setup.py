@@ -36,6 +36,7 @@ from .sysinfo import PY310
 
 from .sysinfo import WIN
 from .sysinfo import OSX
+from .sysinfo import LINUX
 
 from .sysinfo import LIBUV
 from .sysinfo import CFFI_BACKEND
@@ -247,6 +248,26 @@ disabled_tests = [
     'test_context.ContextTest.test_context_var_new_2',
 ]
 
+
+# These contact external hosts whose behaviour has changed since this
+# release (the certificate of self-signed.pythontest.net,
+# www.example.com's response to a POST); they fail with the network enabled
+# independent of gevent.
+disabled_tests += [
+    'test_httplib.HTTPSTest.test_networked_good_cert',
+    'test_httplib.HTTPSTest.test_networked_bad_cert',
+    'test_urllib2.MiscTests.test_issue16464',
+    'test_ssl.NetworkedTests.test_context_setget',
+]
+
+if WIN and sys.version_info[:2] == (3, 6):
+    disabled_tests += [
+        # On the hosted Windows 3.6 interpreter, select(0) right after a
+        # socketpair write does not yet report the socket readable
+        # (AssertionError: 1 != 0); known_failures.py already lists
+        # test_selectors as flaky for timing on Windows.
+        'test_selectors.DefaultSelectorTestCase.test_timeout',
+    ]
 
 if sys.version_info[:3] < (2, 7, 18):
     # The final release was 2.7.18. It added some new tests for new
@@ -783,6 +804,20 @@ if PYPY:
         'test_asyncore.TestAPI_UsePoll.test_handle_read',
     ]
 
+    if PY2 and LINUX:
+        disabled_tests += [
+            # PyPy2's cffi ssl module fails these local TLS handshakes with
+            # "SSLError: [SSL] internal error" against OpenSSL 3 (current Linux
+            # images); they passed against the OpenSSL 1.1 of Ubuntu 18.04.
+            'test_ftplib.TestTLS_FTPClass.test_check_hostname',
+            'test_ftplib.TestTLS_FTPClass.test_context',
+            # With the tipc kernel module loaded these run, but PyPy2's socket
+            # module has AF_TIPC without the TIPC_ADDR_* constants the tests use
+            # (AttributeError: TIPC_ADDR_NAMESEQ).
+            'test_socket.TIPCTest.testRDM',
+            'test_socket.TIPCThreadableTest.testStream',
+        ]
+
     if WIN:
         disabled_tests += [
             # Starting in 7.3.1 on Windows, this stopped raising ValueError; it appears to
@@ -1168,6 +1203,14 @@ if PY35:
         disabled_tests += [
             'test_ssl.ThreadedTests.test_crl_check',
             'test_ssl.BasicSocketTests.test_parse_cert',
+        ]
+
+    if LINUX and sys.version_info[:2] == (3, 10) and sys.version_info[2] > 0:
+        disabled_tests += [
+            # The test_ssl of later 3.10.x releases (the hosted 3.10 interpreter
+            # on current Ubuntu) expects handshake behaviour this 21.12 SSL
+            # wrapper predates; it passes against the 3.10.0 test suite.
+            'test_ssl.SimpleBackgroundTests.test_bio_handshake',
         ]
 
     if ARES:

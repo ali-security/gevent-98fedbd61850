@@ -79,6 +79,11 @@ if [ -d /gevent -a -d /opt/python ]; then
     ls -ld /cache
     ls -ld /cache/pip
     if [ -e /usr/bin/yum ]; then
+        # The CentOS mirrors these images were built against are retired;
+        # point the repos at vault.centos.org and tolerate any other dead repo.
+        sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#baseurl=http://mirror.centos.org/altarch/\$releasever/|baseurl=https://vault.centos.org/altarch/7.9.2009/|' /etc/yum.repos.d/CentOS-Base.repo
+        sed -i 's/^enabled=1/enabled=0/' /etc/yum.repos.d/CentOS-SCLo-*.repo
+        echo skip_if_unavailable=1 >> /etc/yum.conf
         yum -y install libffi-devel
         # Some images/archs (specificaly 2014_aarch64) don't have ccache;
         # This also seems to have vanished for manylinux_2010 x64/64 after November 30
@@ -123,6 +128,8 @@ if [ -d /gevent -a -d /opt/python ]; then
         # The downside is that we must install dependencies manually.
         # NOTE: We can't upgrade ``wheel`` because ``auditwheel`` depends on
         # it, and auditwheel is installed in one of these environments.
+        # Cython 3.0a9 was removed from PyPI; install the release tag's source.
+        python -mpip install https://github.com/cython/cython/archive/refs/tags/3.0.0a9.tar.gz
         python -mpip install -U "cython >= 3.0a6" cffi 'greenlet >= 1.0' setuptools
         time (python setup.py bdist_wheel)
         PATH="$OPATH" auditwheel repair dist/gevent*.whl
@@ -142,12 +149,12 @@ if [ -d /gevent -a -d /opt/python ]; then
         fi
 
         if [ -z "$GEVENTTEST_SKIP_ALL" ]; then
-            python -mgevent.tests --second-chance
+            bash /gevent/.github/sealtest/run-tests.sh python -mgevent.tests --verbose --second-chance
         else
             # Allow skipping the bulk of the tests. If we're emulating Arm,
             # running the whole thing takes forever.
             # XXX: It's possible that what takes forever is actually building gevent itself.
-            python -mgevent.tests.test__core
+            bash /gevent/.github/sealtest/run-tests.sh python -mgevent.tests.test__core
         fi
         rm -rf build
         rm -f dist/gevent*.whl
@@ -172,5 +179,5 @@ fi
 # Travis CI and locally we want `-ti`, but github actions doesn't have a TTY, so one
 # or the other of the arguments causes this to fail with 'input device is not a TTY'
 # Pas through whether we're running on github or not to help with caching.
-docker run --rm -e GEVENT_MANYLINUX_NAME -e GEVENTSETUP_DISABLE_ARES -e GITHUB_ACTIONS -e GEVENTTEST_SKIP_ALL -e DOCKER_IMAGE -v "$(pwd):/gevent" -v "$LCACHE:/cache" -v "$HOME/.ccache:/ccache" ${DOCKER_IMAGE:-quay.io/pypa/manylinux2010_x86_64} /gevent/scripts/releases/$(basename $0)
+docker run --rm --security-opt seccomp=unconfined -e PIP_INDEX_URL -e GEVENT_MANYLINUX_NAME -e GEVENTSETUP_DISABLE_ARES -e GITHUB_ACTIONS -e GEVENTTEST_SKIP_ALL -e DOCKER_IMAGE -v "$(pwd):/gevent" -v "$LCACHE:/cache" -v "$HOME/.ccache:/ccache" ${DOCKER_IMAGE:-quay.io/pypa/manylinux2010_x86_64} /gevent/scripts/releases/$(basename $0)
 ls -l wheelhouse
